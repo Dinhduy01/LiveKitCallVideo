@@ -25,6 +25,8 @@ let isScreenSharing = false;
 let currentRoom = null;
 let isRoomCreator = false; // Track if current user is the room creator
 let endRoomButton = null; // Reference to end room button
+let activeScreenSharer = null; // Track who is currently sharing their screen
+let screenSharePublication = null; // Track the screen share publication
 
 // Configuration
 const configuration = {
@@ -319,7 +321,14 @@ function updateParticipantGrid() {
 }
 
 async function handleTrackSubscribed(track, publication, participant) {
-    console.log('Track subscribed:', track.kind, 'from', participant.identity);
+    console.log('Track subscribed:', track.kind, 'from', participant.identity, 'source:', publication.source);
+    
+    // Check if this is a screen share track
+    if (track.kind === 'video' && publication.source === 'screenShare') {
+        console.log('Screen share track detected from:', participant.identity);
+        handleScreenShareTrack(track, participant);
+        return;
+    }
     
     // Ensure participant element exists
     let participantDiv = document.getElementById(`participant-${participant.identity}`);
@@ -460,75 +469,31 @@ async function handleParticipantConnected(participant) {
     updateParticipantGrid();
 }
 
-// COMMENTING OUT DUPLICATE EVENT LISTENERS
-/*
-// Add event listeners for track publication
-room.on('trackPublished', (publication, participant) => {
-    console.log('Track published:', publication.kind, 'from', participant.identity);
-    if (publication.track) {
-        handleTrackSubscribed(publication.track, publication, participant);
-    }
-});
-
-// Add event listeners for track subscription
-room.on('trackSubscribed', (track, publication, participant) => {
-    console.log('Track subscribed event:', track.kind, 'from', participant.identity);
-    handleTrackSubscribed(track, publication, participant);
-});
-
-// Add event listeners for participant connection
-room.on('participantConnected', (participant) => {
-    console.log('Participant connected event:', participant.identity);
-    handleParticipantConnected(participant);
-});
-
-// Add event listeners for participant disconnection
-room.on('participantDisconnected', (participant) => {
-    console.log('Participant disconnected:', participant.identity);
-    const participantDiv = document.getElementById(`participant-${participant.identity}`);
-    if (participantDiv) {
-        participantDiv.remove();
-    }
-    showWarning(`${participant.identity} left the room`);
-});
-*/
-
 // Hàm theo dõi sự kiện từ phòng để cập nhật trạng thái mic
 function setupRoomEventListeners(room) {
     if (!room) return;
     
-    console.log('Setting up room event listeners...');
+    console.log('Setting up room event listeners');
     
-    // Room events
-    room.on('participantConnected', participant => {
-        console.log('Participant connected:', participant.identity);
-        handleParticipantConnected(participant);
+    // Track publication event
+    room.on('localTrackPublished', (publication) => {
+        console.log('Local track published:', publication.kind);
+        handleLocalTrackPublished(publication);
     });
     
-    room.on('participantDisconnected', participant => {
-        console.log('Participant disconnected:', participant.identity);
-        handleParticipantDisconnected(participant);
-    });
-    
-    room.on('trackPublished', (publication, participant) => {
-        console.log('Track published:', publication.kind, 'from', participant.identity);
-        handleTrackPublished(publication, participant);
-    });
-    
-    room.on('trackUnpublished', (publication, participant) => {
-        console.log('Track unpublished:', publication.kind, 'from', participant.identity);
-    });
-    
+    // Track subscription event
     room.on('trackSubscribed', (track, publication, participant) => {
-        console.log('Track subscribed:', track.kind, 'from', participant.identity);
+        console.log('Track subscribed event:', track.kind, 'from', participant.identity);
         handleTrackSubscribed(track, publication, participant);
     });
     
+    // Track unsubscription event
     room.on('trackUnsubscribed', (track, publication, participant) => {
         console.log('Track unsubscribed:', track.kind, 'from', participant.identity);
-        handleTrackUnsubscribed(track, participant);
+        handleTrackUnsubscribed(track, publication, participant);
     });
-
+    
+    // Room events for track muting
     room.on('trackMuted', (publication, participant) => {
         console.log('Track muted:', publication.kind, 'from', participant.identity);
         if (publication.kind === 'audio') {
@@ -542,19 +507,22 @@ function setupRoomEventListeners(room) {
             updateMicStatusIndicator(participant, false);
         }
     });
-
-    room.on('participantMetadataChanged', (metadata, participant) => {
-        console.log('Participant metadata changed:', participant.identity);
-        try {
-            if (metadata) {
-                const data = JSON.parse(metadata);
-                if (data && typeof data.muted === 'boolean') {
-                    console.log(`Metadata update from ${participant.identity}: muted=${data.muted}`);
-                    updateMicStatusIndicator(participant, data.muted);
-                }
+    
+    // Track publication for screen sharing detection
+    room.on('trackPublished', (publication, participant) => {
+        console.log('Track published:', publication.kind, 'from', participant.identity, 'source:', publication.source);
+        handleTrackPublished(publication, participant);
+        
+        // Handle screen share publications
+        if (publication.kind === 'video' && publication.source === 'screenShare') {
+            console.log('Screen share published by:', participant.identity);
+            activeScreenSharer = participant.identity;
+            
+            // If it's not our own screen share, disable our screen share button
+            if (room.localParticipant.identity !== participant.identity) {
+                screenShareButton.disabled = true;
+                screenShareButton.classList.add('screen-share-disabled');
             }
-        } catch (error) {
-            console.warn('Error parsing participant metadata:', error);
         }
     });
     
@@ -570,14 +538,104 @@ function setupRoomEventListeners(room) {
         resetUI();
     });
     
+    // Participant connection event
+    room.on('participantConnected', (participant) => {
+        console.log('Participant connected event:', participant.identity);
+        handleParticipantConnected(participant);
+        
+        // Listen for metadata updates from this participant
+        participant.on('metadataChanged', (metadata) => {
+            try {
+                if (metadata) {
+                    const metadataObj = JSON.parse(metadata);
+                    
+                    // Handle screen sharing metadata
+                    if (metadataObj.isScreenSharing !== undefined) {
+                        if (metadataObj.isScreenSharing) {
+                            console.log(`${participant.identity} is now sharing their screen`);
+                            activeScreenSharer = participant.identity;
+                            // Disable screen share button for all other participants
+                            if (room.localParticipant.identity !== participant.identity) {
+                                screenShareButton.disabled = true;
+                                screenShareButton.classList.add('screen-share-disabled');
+                            }
+                        } else {
+                            console.log(`${participant.identity} stopped sharing their screen`);
+                            if (activeScreenSharer === participant.identity) {
+                                activeScreenSharer = null;
+                                // Screen sharing has ended, reset layout if needed
+                                resetScreenSharingLayout();
+                            }
+                        }
+                    }
+                    
+                    // Handle mute status updates
+                    if (metadataObj.muted !== undefined) {
+                        updateMicStatusIndicator(participant, metadataObj.muted);
+                    }
+                }
+            } catch (error) {
+                console.error('Error parsing participant metadata:', error);
+            }
+        });
+    });
+    
+    // Participant disconnection event
+    room.on('participantDisconnected', (participant) => {
+        console.log('Participant disconnected event:', participant.identity);
+        
+        // If the screen sharer disconnects, reset the screen sharing state
+        if (activeScreenSharer === participant.identity) {
+            activeScreenSharer = null;
+            resetScreenSharingLayout();
+        }
+        
+        handleParticipantDisconnected(participant);
+    });
+    
+    // Listen for metadata updates from existing participants
+    if (room.participants && typeof room.participants.forEach === 'function') {
+        room.participants.forEach((participant) => {
+            participant.on('metadataChanged', (metadata) => {
+                try {
+                    if (metadata) {
+                        const metadataObj = JSON.parse(metadata);
+                        
+                        // Handle screen sharing metadata
+                        if (metadataObj.isScreenSharing !== undefined) {
+                            if (metadataObj.isScreenSharing) {
+                                console.log(`${participant.identity} is now sharing their screen`);
+                                activeScreenSharer = participant.identity;
+                                // Disable screen share button for all other participants
+                                if (room.localParticipant.identity !== participant.identity) {
+                                    screenShareButton.disabled = true;
+                                    screenShareButton.classList.add('screen-share-disabled');
+                                }
+                            } else {
+                                console.log(`${participant.identity} stopped sharing their screen`);
+                                if (activeScreenSharer === participant.identity) {
+                                    activeScreenSharer = null;
+                                    // Screen sharing has ended, reset layout if needed
+                                    resetScreenSharingLayout();
+                                }
+                            }
+                        }
+                        
+                        // Handle mute status updates
+                        if (metadataObj.muted !== undefined) {
+                            updateMicStatusIndicator(participant, metadataObj.muted);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error parsing participant metadata:', error);
+                }
+            });
+        });
+    }
+    
     // Local participant events
     if (room.localParticipant) {
         const localParticipant = room.localParticipant;
-        
-        localParticipant.on('trackPublished', publication => {
-            console.log('Local track published:', publication.kind);
-            handleLocalTrackPublished(publication);
-        });
         
         localParticipant.on('trackMuted', publication => {
             console.log('Local track muted:', publication.kind);
@@ -836,6 +894,52 @@ async function joinRoom() {
         leaveButton.disabled = false;
 
         showSuccess('Successfully joined the room');
+
+        // Check if someone is already sharing their screen in this room
+        let isScreenShareActive = false;
+        if (room && room.participants && typeof room.participants.forEach === 'function') {
+            room.participants.forEach(participant => {
+                // Check for screen share tracks from this participant
+                if (participant.videoTracks && typeof participant.videoTracks.forEach === 'function') {
+                    participant.videoTracks.forEach(publication => {
+                        if (publication.source === 'screenShare' && !publication.isMuted) {
+                            console.log(`Found active screen share from ${participant.identity}`);
+                            activeScreenSharer = participant.identity;
+                            isScreenShareActive = true;
+                            
+                            // Disable our screen share button
+                            screenShareButton.disabled = true;
+                            screenShareButton.classList.add('screen-share-disabled');
+                        }
+                    });
+                }
+                
+                // Also check metadata for screen sharing status
+                try {
+                    if (participant.metadata) {
+                        const metadataObj = JSON.parse(participant.metadata);
+                        if (metadataObj.isScreenSharing) {
+                            console.log(`Participant ${participant.identity} is sharing screen according to metadata`);
+                            activeScreenSharer = participant.identity;
+                            isScreenShareActive = true;
+                            
+                            // Disable our screen share button
+                            screenShareButton.disabled = true;
+                            screenShareButton.classList.add('screen-share-disabled');
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error parsing participant metadata:', error);
+                }
+            });
+        }
+        
+        // If screen sharing is active, update the layout
+        if (isScreenShareActive) {
+            setTimeout(() => {
+                updateLayoutForScreenSharing();
+            }, 1000); // Short delay to ensure participants are rendered first
+        }
 
     } catch (error) {
         console.error('Error joining room:', error);
@@ -1128,19 +1232,85 @@ async function toggleScreenShare() {
 
     try {
         if (!isScreenSharing) {
-            await room.localParticipant.setScreenShareEnabled(true);
+            // Check if someone else is already sharing screen
+            if (activeScreenSharer && activeScreenSharer !== room.localParticipant.identity) {
+                showWarning(`${activeScreenSharer} is already sharing their screen.`);
+                return;
+            }
+            
+            // Enable screen sharing
+            const screenTrack = await room.localParticipant.setScreenShareEnabled(true);
             isScreenSharing = true;
+            activeScreenSharer = room.localParticipant.identity;
             screenShareButton.querySelector('i').className = 'fas fa-stop';
             showSuccess('Screen sharing started');
+            
+            // Let other participants know that you are sharing
+            room.localParticipant.setMetadata(JSON.stringify({
+                isScreenSharing: true,
+                identity: room.localParticipant.identity,
+                lastUpdate: Date.now()
+            }));
+            
+            // Update layout for screen share view
+            updateLayoutForScreenSharing();
+            
+            // If we have the local screen track, manually attach it to ensure visibility for the sharer
+            if (screenTrack) {
+                console.log('Local screen track obtained');
+                // Find or create the screen container
+                let sharedScreenContainer = document.querySelector('.shared-screen-container');
+                if (!sharedScreenContainer) {
+                    sharedScreenContainer = document.createElement('div');
+                    sharedScreenContainer.className = 'shared-screen-container';
+                    const participantsArea = document.getElementById('participants-area');
+                    participantsArea.prepend(sharedScreenContainer);
+                }
+                
+                // Create or get video element
+                let screenVideo = sharedScreenContainer.querySelector('video');
+                if (!screenVideo) {
+                    screenVideo = document.createElement('video');
+                    screenVideo.id = 'screen-share-video';
+                    screenVideo.autoplay = true;
+                    screenVideo.playsInline = true;
+                    sharedScreenContainer.appendChild(screenVideo);
+                }
+                
+                // Make sure we have the badge
+                let sharerBadge = sharedScreenContainer.querySelector('.screen-sharer-badge');
+                if (!sharerBadge) {
+                    sharerBadge = document.createElement('div');
+                    sharerBadge.className = 'screen-sharer-badge';
+                    sharerBadge.textContent = `${room.localParticipant.identity}'s Screen`;
+                    sharedScreenContainer.appendChild(sharerBadge);
+                }
+                
+                // Directly attach the track to ensure we can see our own screen
+                screenTrack.videoTrack?.attach(screenVideo);
+            }
         } else {
             await room.localParticipant.setScreenShareEnabled(false);
             isScreenSharing = false;
+            activeScreenSharer = null;
             screenShareButton.querySelector('i').className = 'fas fa-desktop';
             showSuccess('Screen sharing stopped');
+            
+            // Update metadata to let others know you stopped sharing
+            room.localParticipant.setMetadata(JSON.stringify({
+                isScreenSharing: false,
+                identity: room.localParticipant.identity,
+                lastUpdate: Date.now()
+            }));
+            
+            // Reset layout
+            resetScreenSharingLayout();
         }
     } catch (error) {
         console.error('Error toggling screen share:', error);
         showError('Failed to toggle screen sharing');
+        isScreenSharing = false;
+        activeScreenSharer = null;
     }
 }
 
@@ -1201,10 +1371,26 @@ function resetUI() {
     // Remove any lingering mic status elements
     document.querySelectorAll('.mic-status').forEach(el => el.remove());
     
+    // Remove any screen sharing elements
+    const sharedScreenContainer = document.querySelector('.shared-screen-container');
+    if (sharedScreenContainer) {
+        sharedScreenContainer.remove();
+    }
+    
+    const participantsStrip = document.querySelector('.participants-strip');
+    if (participantsStrip) {
+        participantsStrip.remove();
+    }
+    
+    // Remove screen share active class
+    const videoContainer = document.querySelector('.video-container');
+    videoContainer.classList.remove('screen-share-active');
+    
     // Reset button states
     muteButton.disabled = true;
     videoButton.disabled = true;
     screenShareButton.disabled = true;
+    screenShareButton.classList.remove('screen-share-disabled');
     leaveButton.disabled = true;
     
     // Remove end room button if it exists
@@ -1218,6 +1404,8 @@ function resetUI() {
     isVideoOff = false;
     isScreenSharing = false;
     isRoomCreator = false;
+    activeScreenSharer = null;
+    screenSharePublication = null;
 }
 
 // Add cleanup function
@@ -1238,6 +1426,63 @@ window.addEventListener('beforeunload', (e) => {
 
 function handleLocalTrackPublished(publication) {
     console.log('Local track published:', publication.kind, 'source:', publication.source, 'trackSid:', publication.trackSid);
+    
+    // Handle screen sharing track
+    if (publication.kind === 'video' && publication.source === 'screenShare') {
+        console.log('Local screen share track published');
+        screenSharePublication = publication;
+        
+        // Ensure we can see our own screen by manually attaching the track to the screen container
+        if (publication.track) {
+            try {
+                // Get or create screen container
+                let sharedScreenContainer = document.querySelector('.shared-screen-container');
+                if (!sharedScreenContainer) {
+                    sharedScreenContainer = document.createElement('div');
+                    sharedScreenContainer.className = 'shared-screen-container';
+                    const participantsArea = document.getElementById('participants-area');
+                    participantsArea.prepend(sharedScreenContainer);
+                }
+                
+                // Get or create video element
+                let screenVideo = sharedScreenContainer.querySelector('video');
+                if (!screenVideo) {
+                    screenVideo = document.createElement('video');
+                    screenVideo.id = 'screen-share-video';
+                    screenVideo.autoplay = true;
+                    screenVideo.playsInline = true;
+                    sharedScreenContainer.appendChild(screenVideo);
+                }
+                
+                // Directly attach our screen track
+                publication.track.attach(screenVideo);
+                console.log('Successfully attached our own screen share track');
+            } catch (error) {
+                console.error('Error attaching local screen share:', error);
+            }
+        }
+        
+        // Listen for unpublish to handle local screen share end
+        publication.on('unpublished', () => {
+            console.log('Local screen share unpublished');
+            isScreenSharing = false;
+            activeScreenSharer = null;
+            screenSharePublication = null;
+            resetScreenSharingLayout();
+            
+            // Update button UI
+            screenShareButton.querySelector('i').className = 'fas fa-desktop';
+            
+            // Update metadata
+            room.localParticipant.setMetadata(JSON.stringify({
+                isScreenSharing: false,
+                identity: room.localParticipant.identity,
+                lastUpdate: Date.now()
+            }));
+        });
+        
+        return;
+    }
     
     if (publication.kind === 'video' && (!publication.source || !publication.source.includes('screen'))) {
         const videoElement = document.getElementById(`video-${room.localParticipant.identity}`);
@@ -1306,15 +1551,37 @@ function handleLocalTrackPublished(publication) {
         } else {
             console.error('Failed to find video element for local participant or track is null');
         }
-    } else if (publication.kind === 'video' && publication.source && publication.source.includes('screen')) {
-        console.log('Screen share track published');
     } else if (publication.kind === 'audio') {
         console.log('Local audio track published');
     }
 }
 
 function handleTrackPublished(publication, participant) {
-    console.log(`Track published from ${participant.identity}:`, publication.kind);
+    console.log(`Track published from ${participant.identity}:`, publication.kind, 'source:', publication.source);
+
+    // Handle screen share track
+    if (publication.kind === 'video' && publication.source === 'screenShare') {
+        console.log('Screen share published by:', participant.identity);
+        activeScreenSharer = participant.identity;
+        
+        // If screen share track is already available, handle it
+        if (publication.track) {
+            handleScreenShareTrack(publication.track, participant);
+        }
+        
+        // Otherwise wait for subscription
+        publication.on('subscribed', (track) => {
+            handleScreenShareTrack(track, participant);
+        });
+        
+        // Listen for unpublish to handle screen share end
+        publication.on('unpublished', () => {
+            console.log('Screen share unpublished by:', participant.identity);
+            handleScreenShareEnded(participant);
+        });
+        
+        return;
+    }
 
     // Update mute status for audio tracks
     if (publication.kind === 'audio') {
@@ -1332,7 +1599,7 @@ function handleTrackPublished(publication, participant) {
         });
     }
 
-    // For video tracks, handle them when subscribed
+    // For regular video tracks, handle them when subscribed
     if (publication.track) {
         handleTrackSubscribed(publication.track, publication, participant);
     } else {
@@ -1343,8 +1610,15 @@ function handleTrackPublished(publication, participant) {
     }
 }
 
-function handleTrackUnsubscribed(track, participant) {
-    console.log('Track unsubscribed:', track.kind, 'from', participant.identity);
+function handleTrackUnsubscribed(track, publication, participant) {
+    console.log('Track unsubscribed:', track.kind, 'from', participant.identity, 'source:', publication?.source);
+    
+    // Handle screen share track removal
+    if (track.kind === 'video' && publication?.source === 'screenShare') {
+        console.log('Screen share track unsubscribed from:', participant.identity);
+        handleScreenShareEnded(participant);
+        return;
+    }
     
     if (track.kind === 'audio') {
         const audioElement = document.getElementById(`audio-${participant.identity}`);
@@ -1375,18 +1649,6 @@ function handleParticipantDisconnected(participant) {
     // Update grid layout
     updateParticipantGrid();
 }
-
-// Add grant for the room
-at.addGrant({
-    roomJoin: true,
-    room: roomName,
-    canPublish: true,
-    canSubscribe: true,
-    canPublishData: true,
-    roomList: true,
-    roomCreate: true,
-    roomAdmin: false
-});
 
 // Thêm hàm addParticipantTrack mới
 function addParticipantTrack(participant, element) {
@@ -1522,5 +1784,142 @@ async function endRoom() {
             console.error('Error ending room:', error);
             showError('Failed to end room: ' + error.message);
         }
+    }
+}
+
+// Function to update the layout for screen sharing
+function updateLayoutForScreenSharing() {
+    const videoContainer = document.querySelector('.video-container');
+    const participantsArea = document.getElementById('participants-area');
+    
+    // Add screen share active class to container
+    videoContainer.classList.add('screen-share-active');
+    
+    // Create shared screen container if it doesn't exist
+    let sharedScreenContainer = document.querySelector('.shared-screen-container');
+    if (!sharedScreenContainer) {
+        sharedScreenContainer = document.createElement('div');
+        sharedScreenContainer.className = 'shared-screen-container';
+        participantsArea.prepend(sharedScreenContainer);
+        
+        // Add sharer badge
+        const sharerBadge = document.createElement('div');
+        sharerBadge.className = 'screen-sharer-badge';
+        sharerBadge.textContent = `${activeScreenSharer}'s Screen`;
+        sharedScreenContainer.appendChild(sharerBadge);
+    }
+    
+    // Create participants strip if it doesn't exist
+    let participantsStrip = document.querySelector('.participants-strip');
+    if (!participantsStrip) {
+        participantsStrip = document.createElement('div');
+        participantsStrip.className = 'participants-strip';
+        participantsArea.appendChild(participantsStrip);
+    }
+    
+    // Move all participant elements to the strip
+    const participantElements = document.querySelectorAll('.participant');
+    participantElements.forEach(el => {
+        participantsStrip.appendChild(el);
+    });
+    
+    // Disable screen share button for all other participants
+    if (room && room.localParticipant && activeScreenSharer !== room.localParticipant.identity) {
+        screenShareButton.disabled = true;
+        screenShareButton.classList.add('screen-share-disabled');
+    }
+}
+
+// Function to reset the layout after screen sharing ends
+function resetScreenSharingLayout() {
+    const videoContainer = document.querySelector('.video-container');
+    const participantsArea = document.getElementById('participants-area');
+    
+    // Remove screen share active class
+    videoContainer.classList.remove('screen-share-active');
+    
+    // Get the shared screen container and remove it
+    const sharedScreenContainer = document.querySelector('.shared-screen-container');
+    if (sharedScreenContainer) {
+        sharedScreenContainer.remove();
+    }
+    
+    // Get participants from the strip and move them back to the main area
+    const participantsStrip = document.querySelector('.participants-strip');
+    if (participantsStrip) {
+        const participantElements = participantsStrip.querySelectorAll('.participant');
+        participantElements.forEach(el => {
+            participantsArea.appendChild(el);
+        });
+        participantsStrip.remove();
+    }
+    
+    // Re-enable screen share button for all participants
+    screenShareButton.disabled = false;
+    screenShareButton.classList.remove('screen-share-disabled');
+    
+    // Update the grid layout
+    updateParticipantGrid();
+}
+
+// Function to handle a participant's screen share
+function handleScreenShareTrack(track, participant) {
+    console.log('Handling screen share track from:', participant.identity);
+    
+    // Mark this participant as the active screen sharer
+    activeScreenSharer = participant.identity;
+    
+    // Update the layout
+    updateLayoutForScreenSharing();
+    
+    // Get or create the screen container
+    let sharedScreenContainer = document.querySelector('.shared-screen-container');
+    if (!sharedScreenContainer) {
+        sharedScreenContainer = document.createElement('div');
+        sharedScreenContainer.className = 'shared-screen-container';
+        const participantsArea = document.getElementById('participants-area');
+        participantsArea.prepend(sharedScreenContainer);
+    }
+    
+    // Update badge
+    let sharerBadge = sharedScreenContainer.querySelector('.screen-sharer-badge');
+    if (!sharerBadge) {
+        sharerBadge = document.createElement('div');
+        sharerBadge.className = 'screen-sharer-badge';
+        sharerBadge.textContent = `${participant.identity}'s Screen`;
+        sharedScreenContainer.appendChild(sharerBadge);
+    }
+    sharerBadge.textContent = `${participant.identity}'s Screen`;
+    
+    // Create video element for the screen share
+    let screenVideo = sharedScreenContainer.querySelector('video');
+    if (!screenVideo) {
+        screenVideo = document.createElement('video');
+        screenVideo.id = 'screen-share-video';
+        screenVideo.autoplay = true;
+        screenVideo.playsInline = true;
+        sharedScreenContainer.appendChild(screenVideo);
+    }
+    
+    // Attach the track to the video element
+    track.attach(screenVideo);
+    
+    // Disable screen share button for all participants except the sharer
+    if (room && room.localParticipant && activeScreenSharer !== room.localParticipant.identity) {
+        screenShareButton.disabled = true;
+        screenShareButton.classList.add('screen-share-disabled');
+    }
+}
+
+// Function to handle when screen sharing stops
+function handleScreenShareEnded(participant) {
+    console.log('Screen sharing ended by:', participant.identity);
+    
+    // Only process if this is the active screen sharer
+    if (activeScreenSharer === participant.identity) {
+        activeScreenSharer = null;
+        
+        // Reset the layout
+        resetScreenSharingLayout();
     }
 } 

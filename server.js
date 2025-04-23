@@ -132,6 +132,7 @@ app.post('/get-token', async (req, res) => {
             canPublish: true,
             canSubscribe: true,
             canPublishData: true,
+            canUpdateOwnMetadata: true,
             // Set room admin privileges for the creator
             roomAdmin: isRoomCreator,
         });
