@@ -13,6 +13,8 @@ const participantsArea = document.getElementById('participants-area');
 const screenShareButton = document.getElementById('screenShareButton');
 const leaveButton = document.getElementById('leaveButton');
 const participantNameInput = document.getElementById('participantName');
+const meetingTitle = document.querySelector('.meeting-title');
+const meetingTime = document.querySelector('.meeting-time');
 
 // Variables
 let room;
@@ -109,10 +111,167 @@ function createParticipantElement(participant) {
     nameElement.className = 'participant-name';
     nameElement.textContent = participant.identity;
     
+    const statusElement = document.createElement('div');
+    statusElement.className = 'participant-status';
+    statusElement.id = `status-${participant.identity}`;
+    
+    // Add mute status indicator
+    const micStatusElement = document.createElement('div');
+    micStatusElement.className = 'mic-status';
+    micStatusElement.id = `mic-status-${participant.identity}`;
+    micStatusElement.style.display = 'none'; // Hidden by default
+    
+    const micIcon = document.createElement('i');
+    micIcon.className = 'fas fa-microphone-slash';
+    micStatusElement.appendChild(micIcon);
+    
     participantDiv.appendChild(videoContainer);
     participantDiv.appendChild(nameElement);
+    participantDiv.appendChild(statusElement);
+    participantDiv.appendChild(micStatusElement);
     
     return participantDiv;
+}
+
+// Function to update mic status indicator for a participant
+function updateMicStatusIndicator(participant, isMuted) {
+    console.log(`Updating mic status for ${participant.identity} to ${isMuted ? 'muted' : 'unmuted'}`);
+    const micStatusElement = document.getElementById(`mic-status-${participant.identity}`);
+    
+    if (micStatusElement) {
+        // Display mic status indicator only if muted
+        micStatusElement.style.display = isMuted ? 'flex' : 'none';
+        
+        // Make sure the mic icon is correct
+        const micIcon = micStatusElement.querySelector('i');
+        if (micIcon) {
+            micIcon.className = 'fas fa-microphone-slash';
+        }
+    } else {
+        console.warn(`Mic status element not found for ${participant.identity}`);
+        
+        // Create mic status element if it doesn't exist
+        const participantDiv = document.getElementById(`participant-${participant.identity}`);
+        if (participantDiv) {
+            const newMicStatusElement = document.createElement('div');
+            newMicStatusElement.className = 'mic-status';
+            newMicStatusElement.id = `mic-status-${participant.identity}`;
+            newMicStatusElement.style.display = isMuted ? 'flex' : 'none';
+            
+            const micIcon = document.createElement('i');
+            micIcon.className = 'fas fa-microphone-slash';
+            newMicStatusElement.appendChild(micIcon);
+            
+            participantDiv.appendChild(newMicStatusElement);
+            console.log(`Created new mic status element for ${participant.identity}`);
+        }
+    }
+
+    // Broadcast mute status to other participants for visibility
+    if (room && participant === room.localParticipant) {
+        // Only broadcast our own mute status
+        room.localParticipant.setMetadata(JSON.stringify({
+            muted: isMuted,
+            lastUpdate: Date.now()
+        }));
+    }
+}
+
+// Hook into participant events to update mic status
+function setupParticipantTrackListeners(participant) {
+    try {
+        console.log("Setting up track listeners for participant:", participant.identity);
+        
+        // Listen for trackSubscribed event to handle initial tracks
+        participant.on('trackSubscribed', (track, publication) => {
+            console.log(`Track subscribed from ${participant.identity}:`, track.kind);
+            
+            if (track.kind === 'audio') {
+                // Check initial mute status when audio track is subscribed
+                updateMicStatusIndicator(participant, publication.isMuted || track.isMuted);
+                console.log(`Initial audio track status for ${participant.identity}: ${publication.isMuted ? 'muted' : 'unmuted'}`);
+            }
+        });
+        
+        // Setup mute/unmute event listeners
+        participant.on('trackMuted', publication => {
+            if (publication.kind === 'audio') {
+                console.log(`${participant.identity} muted their microphone`);
+                updateMicStatusIndicator(participant, true);
+            }
+        });
+        
+        participant.on('trackUnmuted', publication => {
+            if (publication.kind === 'audio') {
+                console.log(`${participant.identity} unmuted their microphone`);
+                updateMicStatusIndicator(participant, false);
+            }
+        });
+        
+        // Listen for metadata updates which can contain mute status
+        participant.on('metadataChanged', (metadata) => {
+            try {
+                if (metadata) {
+                    const data = JSON.parse(metadata);
+                    if (data && typeof data.muted === 'boolean') {
+                        console.log(`Metadata update from ${participant.identity}: muted=${data.muted}`);
+                        updateMicStatusIndicator(participant, data.muted);
+                    }
+                }
+            } catch (error) {
+                console.warn('Error parsing participant metadata:', error);
+            }
+        });
+        
+        // If participant already has audio tracks, check their status immediately
+        if (participant.audioTracks && typeof participant.audioTracks.values === 'function') {
+            const audioPublications = Array.from(participant.audioTracks.values());
+            if (audioPublications.length > 0) {
+                const isMuted = audioPublications.some(pub => pub.isMuted);
+                updateMicStatusIndicator(participant, isMuted);
+                console.log(`Initial mic status for ${participant.identity}: ${isMuted ? 'muted' : 'unmuted'}`);
+            } else {
+                console.log(`No audio tracks found for ${participant.identity}`);
+                // Since we don't have audio tracks yet, assume initially muted
+                updateMicStatusIndicator(participant, true);
+            }
+        } else if (participant.tracks && typeof participant.tracks.values === 'function') {
+            // Fallback for checking track publications
+            console.log(`Using fallback method for ${participant.identity}`);
+            
+            // Check if any audio track exists using alternative API methods
+            const trackPublications = Array.from(participant.tracks.values());
+            const audioPublication = trackPublications.find(pub => pub.kind === 'audio');
+            
+            if (audioPublication) {
+                updateMicStatusIndicator(participant, audioPublication.isMuted);
+                console.log(`Fallback mic status for ${participant.identity}: ${audioPublication.isMuted ? 'muted' : 'unmuted'}`);
+            } else {
+                console.log(`No audio tracks found for ${participant.identity} (fallback check)`);
+                // Since we don't have audio tracks yet, assume initially muted
+                updateMicStatusIndicator(participant, true);
+            }
+        } else {
+            console.log(`Cannot determine initial mic status for ${participant.identity}`);
+            // Default to muted until we get an update
+            updateMicStatusIndicator(participant, true);
+        }
+
+        // Check metadata for mute status information
+        if (participant.metadata) {
+            try {
+                const data = JSON.parse(participant.metadata);
+                if (data && typeof data.muted === 'boolean') {
+                    console.log(`Initial metadata for ${participant.identity}: muted=${data.muted}`);
+                    updateMicStatusIndicator(participant, data.muted);
+                }
+            } catch (error) {
+                console.warn('Error parsing initial participant metadata:', error);
+            }
+        }
+    } catch (error) {
+        console.error('Error setting up participant track listeners:', error);
+    }
 }
 
 // Helper functions
@@ -144,6 +303,19 @@ function getParticipantElements(participantId) {
     return { participantDiv, videoContainer, placeholder, videoElement };
 }
 
+function updateParticipantGrid() {
+    // Count the number of participant divs
+    const participantCount = participantsArea.querySelectorAll('.participant').length;
+    
+    // Remove all participant count classes
+    participantsArea.className = '';
+    
+    // Add the appropriate class based on the number of participants
+    participantsArea.classList.add(`participants-${participantCount}`);
+    
+    console.log(`Updated grid layout for ${participantCount} participants`);
+}
+
 async function handleTrackSubscribed(track, publication, participant) {
     console.log('Track subscribed:', track.kind, 'from', participant.identity);
     
@@ -153,6 +325,7 @@ async function handleTrackSubscribed(track, publication, participant) {
         console.log('Creating missing participant element for:', participant.identity);
         participantDiv = createParticipantElement(participant);
         participantsArea.appendChild(participantDiv);
+        updateParticipantGrid();
     }
     
     if (track.kind === 'video') {
@@ -188,6 +361,11 @@ async function handleTrackSubscribed(track, publication, participant) {
         }
     } else if (track.kind === 'audio') {
         await handleAudioTrack(track, participant);
+        
+        // Update mic status based on the current mute state
+        const isMuted = publication.isMuted || track.isMuted;
+        console.log(`Audio track subscribed for ${participant.identity}, muted: ${isMuted}`);
+        updateMicStatusIndicator(participant, isMuted);
     }
 }
 
@@ -203,52 +381,85 @@ async function handleAudioTrack(track, participant) {
     }
 }
 
-async function handleRoomConnected() {
-    console.log('Room connected:', room.name);
-    
-    // Create elements for all existing participants
-    if (room && room.participants) {
-        for (const [_, participant] of room.participants) {
-            if (participant !== room.localParticipant) {
-                let participantDiv = document.getElementById(`participant-${participant.identity}`);
-                if (!participantDiv) {
-                    participantDiv = createParticipantElement(participant);
-                    participantsArea.appendChild(participantDiv);
-                    console.log('Created element for existing participant:', participant.identity);
-                }
+// Function to update meeting time
+function updateMeetingTime() {
+    const now = new Date();
+    const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    meetingTime.textContent = timeString;
+}
 
-                // Subscribe to existing tracks
-                participant.getTracks().forEach(track => {
-                    if (track.track) {
-                        handleTrackSubscribed(track.track, track, participant);
-                    }
-                });
+async function handleRoomConnected() {
+    console.log('Connected to room, local participant:', room.localParticipant?.identity || 'unknown');
+    
+    // Set window title with room name
+    document.title = `Meeting - ${room.name || 'Conference'}`;
+    
+    // Update meeting info
+    meetingTitle.textContent = room.name || 'Meeting';
+    updateMeetingTime();
+    
+    // Update meeting time every minute
+    setInterval(updateMeetingTime, 60000);
+    
+    // Create elements for existing participants
+    if (room && room.participants) {
+        room.participants.forEach((participant, sid) => {
+            if (!document.getElementById(`participant-${participant.identity}`)) {
+                const participantDiv = createParticipantElement(participant);
+                participantsArea.appendChild(participantDiv);
+                
+                // Set up track listeners
+                handleNewParticipant(participant);
             }
-        }
+        });
     }
+    
+    // Set up track listeners for local participant only if it exists
+    if (room && room.localParticipant) {
+        handleNewParticipant(room.localParticipant);
+    } else {
+        console.warn('Local participant not available for setting up track listeners');
+    }
+    
+    // Update grid layout
+    updateParticipantGrid();
 }
 
 async function handleParticipantConnected(participant) {
     console.log('Participant connected:', participant.identity);
     
-    // First, create the participant element if it doesn't exist
-    let participantDiv = document.getElementById(`participant-${participant.identity}`);
-    if (!participantDiv) {
-        participantDiv = createParticipantElement(participant);
+    // Create element for new participant if it doesn't exist
+    if (!document.getElementById(`participant-${participant.identity}`)) {
+        const participantDiv = createParticipantElement(participant);
         participantsArea.appendChild(participantDiv);
-        console.log('Created element for new participant:', participant.identity);
     }
-
-    // Subscribe to participant's existing tracks
-    participant.getTracks().forEach(track => {
-        if (track.track) {
-            handleTrackSubscribed(track.track, track, participant);
+    
+    // Set up track listeners for this participant
+    handleNewParticipant(participant);
+    
+    // Đặt trạng thái mic mặc định là tắt cho đến khi có thông tin chính xác
+    updateMicStatusIndicator(participant, true);
+    
+    // Kiểm tra xem người tham gia có audio track không
+    if (participant.audioTracks && typeof participant.audioTracks.values === 'function') {
+        const audioTracks = Array.from(participant.audioTracks.values());
+        if (audioTracks.length > 0) {
+            // Đã có audio track, cập nhật trạng thái mic
+            const isMuted = audioTracks[0].isMuted;
+            updateMicStatusIndicator(participant, isMuted);
+            console.log(`Participant ${participant.identity} joined with mic ${isMuted ? 'muted' : 'unmuted'}`);
         }
-    });
-
-    showSuccess(`${participant.identity} joined the room`);
+    }
+    
+    // Show notification
+    showSuccess(`${participant.identity} joined the meeting`);
+    
+    // Update grid layout
+    updateParticipantGrid();
 }
 
+// COMMENTING OUT DUPLICATE EVENT LISTENERS
+/*
 // Add event listeners for track publication
 room.on('trackPublished', (publication, participant) => {
     console.log('Track published:', publication.kind, 'from', participant.identity);
@@ -278,7 +489,143 @@ room.on('participantDisconnected', (participant) => {
     }
     showWarning(`${participant.identity} left the room`);
 });
+*/
 
+// Hàm theo dõi sự kiện từ phòng để cập nhật trạng thái mic
+function setupRoomEventListeners(room) {
+    if (!room) return;
+    
+    console.log('Setting up room event listeners...');
+    
+    // Room events
+    room.on('participantConnected', participant => {
+        console.log('Participant connected:', participant.identity);
+        handleParticipantConnected(participant);
+    });
+    
+    room.on('participantDisconnected', participant => {
+        console.log('Participant disconnected:', participant.identity);
+        handleParticipantDisconnected(participant);
+    });
+    
+    room.on('trackPublished', (publication, participant) => {
+        console.log('Track published:', publication.kind, 'from', participant.identity);
+        handleTrackPublished(publication, participant);
+    });
+    
+    room.on('trackUnpublished', (publication, participant) => {
+        console.log('Track unpublished:', publication.kind, 'from', participant.identity);
+    });
+    
+    room.on('trackSubscribed', (track, publication, participant) => {
+        console.log('Track subscribed:', track.kind, 'from', participant.identity);
+        handleTrackSubscribed(track, publication, participant);
+    });
+    
+    room.on('trackUnsubscribed', (track, publication, participant) => {
+        console.log('Track unsubscribed:', track.kind, 'from', participant.identity);
+        handleTrackUnsubscribed(track, participant);
+    });
+
+    room.on('trackMuted', (publication, participant) => {
+        console.log('Track muted:', publication.kind, 'from', participant.identity);
+        if (publication.kind === 'audio') {
+            updateMicStatusIndicator(participant, true);
+        }
+    });
+
+    room.on('trackUnmuted', (publication, participant) => {
+        console.log('Track unmuted:', publication.kind, 'from', participant.identity);
+        if (publication.kind === 'audio') {
+            updateMicStatusIndicator(participant, false);
+        }
+    });
+
+    room.on('participantMetadataChanged', (metadata, participant) => {
+        console.log('Participant metadata changed:', participant.identity);
+        try {
+            if (metadata) {
+                const data = JSON.parse(metadata);
+                if (data && typeof data.muted === 'boolean') {
+                    console.log(`Metadata update from ${participant.identity}: muted=${data.muted}`);
+                    updateMicStatusIndicator(participant, data.muted);
+                }
+            }
+        } catch (error) {
+            console.warn('Error parsing participant metadata:', error);
+        }
+    });
+    
+    // Local participant events
+    if (room.localParticipant) {
+        const localParticipant = room.localParticipant;
+        
+        localParticipant.on('trackPublished', publication => {
+            console.log('Local track published:', publication.kind);
+            handleLocalTrackPublished(publication);
+        });
+        
+        localParticipant.on('trackMuted', publication => {
+            console.log('Local track muted:', publication.kind);
+            if (publication.kind === 'audio') {
+                isMuted = true;
+                updateMicStatusIndicator(localParticipant, true);
+                
+                // Update button UI
+                const muteIcon = muteButton.querySelector('i');
+                if (muteIcon) muteIcon.className = 'fas fa-microphone-slash';
+            }
+        });
+        
+        localParticipant.on('trackUnmuted', publication => {
+            console.log('Local track unmuted:', publication.kind);
+            if (publication.kind === 'audio') {
+                isMuted = false;
+                updateMicStatusIndicator(localParticipant, false);
+                
+                // Update button UI
+                const muteIcon = muteButton.querySelector('i');
+                if (muteIcon) muteIcon.className = 'fas fa-microphone';
+            }
+        });
+    }
+}
+
+// Hàm xử lý người tham gia mới
+function handleNewParticipant(participant) {
+    // Theo dõi khi người tham gia publish track mới
+    participant.on('trackPublished', (publication) => {
+        console.log(`${participant.identity} published ${publication.kind} track`);
+        if (publication.kind === 'audio') {
+            updateMicStatusIndicator(participant, publication.isMuted);
+        }
+    });
+
+    // Theo dõi khi track được subscribe
+    participant.on('trackSubscribed', (track, publication) => {
+        console.log(`Subscribed to ${track.kind} track from ${participant.identity}`);
+        if (track.kind === 'audio') {
+            updateMicStatusIndicator(participant, publication.isMuted || track.isMuted);
+        }
+    });
+
+    // Theo dõi sự kiện mute/unmute
+    participant.on('trackMuted', publication => {
+        if (publication.kind === 'audio') {
+            console.log(`${participant.identity} muted their microphone`);
+            updateMicStatusIndicator(participant, true);
+        }
+    });
+    
+    participant.on('trackUnmuted', publication => {
+        if (publication.kind === 'audio') {
+            console.log(`${participant.identity} unmuted their microphone`);
+            updateMicStatusIndicator(participant, false);
+        }
+    });
+}
+
+// Cập nhật hàm joinRoom để thiết lập room event listeners
 async function joinRoom() {
     const roomName = roomInput.value.trim();
     const participantName = participantNameInput.value.trim();
@@ -311,15 +658,38 @@ async function joinRoom() {
             .on('trackPublished', handleTrackPublished)
             .on('localTrackPublished', handleLocalTrackPublished)
             .on('connected', handleRoomConnected);
+            
+        // Thiết lập các event listener bổ sung để theo dõi trạng thái mic
+        setupRoomEventListeners(room);
 
         // Connect to room
         await room.connect(url, token);
         console.log('Connected to room:', room.name);
         
+        // Cập nhật event listeners cho tất cả người tham gia hiện tại
+        if (room.participants) {
+            room.participants.forEach((participant) => {
+                handleNewParticipant(participant);
+            });
+        }
+        
         // Create local participant element first
-        const localParticipantDiv = createParticipantElement(room.localParticipant);
-        localParticipantDiv.classList.add('local-participant');
-        participantsArea.appendChild(localParticipantDiv);
+        if (room.localParticipant) {
+            const localParticipantDiv = createParticipantElement(room.localParticipant);
+            localParticipantDiv.classList.add('local-participant');
+            participantsArea.appendChild(localParticipantDiv);
+            
+            // Thiết lập listeners cho local participant
+            handleNewParticipant(room.localParticipant);
+            
+            // Đặt mặc định trạng thái mic ban đầu là không tắt
+            updateMicStatusIndicator(room.localParticipant, false);
+        } else {
+            console.warn("Local participant not available yet");
+        }
+        
+        // Update grid layout
+        updateParticipantGrid();
         
         // Wait a bit to ensure DOM is updated
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -329,18 +699,26 @@ async function joinRoom() {
         const hasCamera = devices.some(device => device.kind === 'videoinput');
         const hasMicrophone = devices.some(device => device.kind === 'audioinput');
 
+        // Update icon buttons
+        const muteIcon = muteButton.querySelector('i');
+        const videoIcon = videoButton.querySelector('i');
+
         try {
             if (hasCamera && hasMicrophone) {
                 // Try to enable both camera and microphone
                 await room.localParticipant.enableCameraAndMicrophone();
                 isVideoOff = false;
-                videoButton.textContent = 'Stop Video';
+                isMuted = false;
+                videoIcon.className = 'fas fa-video';
+                muteIcon.className = 'fas fa-microphone';
                 console.log('Camera and microphone enabled');
             } else if (hasMicrophone) {
                 // Only enable microphone if available
                 await room.localParticipant.setMicrophoneEnabled(true);
                 isVideoOff = true;
-                videoButton.textContent = 'Start Video';
+                isMuted = false;
+                videoIcon.className = 'fas fa-video-slash';
+                muteIcon.className = 'fas fa-microphone';
                 videoButton.disabled = true; // Disable video button if no camera
                 showWarning('No camera detected. Joining with audio only.');
                 console.log('Microphone enabled, no camera available');
@@ -348,8 +726,8 @@ async function joinRoom() {
                 // No audio devices available
                 isVideoOff = true;
                 isMuted = true;
-                videoButton.textContent = 'Start Video';
-                muteButton.textContent = 'Unmute';
+                videoIcon.className = 'fas fa-video-slash';
+                muteIcon.className = 'fas fa-microphone-slash';
                 videoButton.disabled = true;
                 muteButton.disabled = true;
                 showWarning('No audio or video devices detected. You can only view the meeting.');
@@ -363,13 +741,17 @@ async function joinRoom() {
                 try {
                     await room.localParticipant.setMicrophoneEnabled(true);
                     isVideoOff = true;
-                    videoButton.textContent = 'Start Video';
+                    isMuted = false;
+                    videoIcon.className = 'fas fa-video-slash';
+                    muteIcon.className = 'fas fa-microphone';
                     showWarning('Could not access camera. Joining with audio only.');
                     console.log('Fallback to audio only successful');
                 } catch (micError) {
                     console.error('Could not enable microphone:', micError);
                     isVideoOff = true;
                     isMuted = true;
+                    videoIcon.className = 'fas fa-video-slash';
+                    muteIcon.className = 'fas fa-microphone-slash';
                     videoButton.disabled = true;
                     muteButton.disabled = true;
                     showError('Could not access any media devices. You can only view the meeting.');
@@ -377,6 +759,8 @@ async function joinRoom() {
             } else {
                 isVideoOff = true;
                 isMuted = true;
+                videoIcon.className = 'fas fa-video-slash';
+                muteIcon.className = 'fas fa-microphone-slash';
                 videoButton.disabled = true;
                 muteButton.disabled = true;
                 showError('No media devices available. You can only view the meeting.');
@@ -550,64 +934,156 @@ function hangUp() {
 }
 
 async function toggleMute() {
-    try {
-        if (!room || !room.localParticipant) {
-            showError('Not connected to room');
-            return;
-        }
+    if (!room) return;
 
+    try {
+        // Cập nhật trạng thái micro trước để giao diện phản hồi nhanh
         isMuted = !isMuted;
+        
+        // Update button text and icon
+        const muteIcon = muteButton.querySelector('i');
+        if (isMuted) {
+            muteIcon.className = 'fas fa-microphone-slash';
+            showSuccess('Microphone is now muted');
+            
+            // Show mute icon on video
+            updateMicStatusIndicator(room.localParticipant, true);
+        } else {
+            muteIcon.className = 'fas fa-microphone';
+            showSuccess('Microphone is now unmuted');
+            
+            // Hide mute icon on video
+            updateMicStatusIndicator(room.localParticipant, false);
+        }
+        
+        // Thực hiện thay đổi trạng thái micro
         await room.localParticipant.setMicrophoneEnabled(!isMuted);
         
-        muteButton.textContent = isMuted ? 'Unmute' : 'Mute';
-        showSuccess(isMuted ? 'Microphone muted' : 'Microphone unmuted');
+        // Set metadata to ensure other participants see the change
+        room.localParticipant.setMetadata(JSON.stringify({
+            muted: isMuted,
+            lastUpdate: Date.now()
+        }));
+        
+        // Gửi thông báo để các tham gia viên khác biết
+        console.log(`Local participant mic ${isMuted ? 'muted' : 'unmuted'}`);
+        
     } catch (error) {
+        // Nếu xảy ra lỗi, khôi phục trạng thái
+        isMuted = !isMuted;
         console.error('Error toggling mute:', error);
-        showError('Failed to toggle mute: ' + error.message);
+        showError('Failed to toggle microphone');
+        
+        // Cập nhật lại giao diện
+        const muteIcon = muteButton.querySelector('i');
+        muteIcon.className = isMuted ? 'fas fa-microphone-slash' : 'fas fa-microphone';
+        updateMicStatusIndicator(room.localParticipant, isMuted);
     }
 }
 
 async function toggleVideo() {
-    try {
-        if (!room || !room.localParticipant) {
-            showError('Not connected to room');
-            return;
-        }
+    if (!room) return;
 
-        isVideoOff = !isVideoOff;
-        await room.localParticipant.setCameraEnabled(!isVideoOff);
+    try {
+        console.log("Toggling video, current state:", isVideoOff ? "off" : "on");
         
-        videoButton.textContent = isVideoOff ? 'Start Video' : 'Stop Video';
-        showSuccess(isVideoOff ? 'Camera disabled' : 'Camera enabled');
+        // Update UI immediately for better UX
+        const videoIcon = videoButton.querySelector('i');
+        const placeholder = document.querySelector(`#participant-${room.localParticipant.identity} .video-placeholder`);
+        const videoElement = document.getElementById(`video-${room.localParticipant.identity}`);
+        const participantDiv = document.getElementById(`participant-${room.localParticipant.identity}`);
+        
+        // Toggle video state
+        isVideoOff = !isVideoOff;
+        
+        if (isVideoOff) {
+            // Turn off camera
+            await room.localParticipant.setCameraEnabled(false);
+            videoIcon.className = 'fas fa-video-slash';
+            showSuccess('Camera is now off');
+            
+            // Show placeholder
+            if (placeholder) {
+                placeholder.style.display = 'flex';
+            }
+            
+            // Add class to participant div
+            if (participantDiv) {
+                participantDiv.classList.add('video-off');
+            }
+        } else {
+            // Turn on camera
+            videoIcon.className = 'fas fa-video';
+            showSuccess('Camera is now on');
+            
+            try {
+                // Enable camera
+                await room.localParticipant.setCameraEnabled(true);
+                
+                // Hide placeholder
+                if (placeholder) {
+                    placeholder.style.display = 'none';
+                }
+                
+                // Remove class from participant div
+                if (participantDiv) {
+                    participantDiv.classList.remove('video-off');
+                }
+                
+                // Re-attach video if needed after a short delay (camera needs time to initialize)
+                setTimeout(() => {
+                    const videoTrack = room.localParticipant.getTrackPublications().find(
+                        pub => pub.kind === 'video' && (!pub.source || !pub.source.includes('screen'))
+                    );
+                    
+                    if (videoTrack && videoTrack.track) {
+                        // Clear existing video first
+                        if (videoElement) {
+                            videoElement.srcObject = null;
+                            videoTrack.track.attach(videoElement);
+                            console.log("Reattached camera track after enabling");
+                            
+                            // Force play the video element
+                            videoElement.play().catch(err => console.warn("Could not play video", err));
+                        }
+                    } else {
+                        console.warn("Camera enabled but no track found");
+                    }
+                }, 500);
+            } catch (error) {
+                console.error("Failed to enable camera:", error);
+                // Revert UI if camera enabling fails
+                isVideoOff = true;
+                videoIcon.className = 'fas fa-video-slash';
+                if (placeholder) placeholder.style.display = 'flex';
+                if (participantDiv) participantDiv.classList.add('video-off');
+                showError('Failed to enable camera');
+            }
+        }
     } catch (error) {
         console.error('Error toggling video:', error);
-        showError('Failed to toggle video: ' + error.message);
+        showError('Failed to toggle camera');
     }
 }
 
 async function toggleScreenShare() {
-    try {
-        if (!room || !room.localParticipant) {
-            showError('Not connected to room');
-            return;
-        }
+    if (!room) return;
 
+    try {
         if (!isScreenSharing) {
-            // Start screen sharing
             await room.localParticipant.setScreenShareEnabled(true);
             isScreenSharing = true;
-            screenShareButton.textContent = 'Stop Sharing';
+            screenShareButton.querySelector('i').className = 'fas fa-stop';
             showSuccess('Screen sharing started');
         } else {
-            // Stop screen sharing
             await room.localParticipant.setScreenShareEnabled(false);
             isScreenSharing = false;
-            screenShareButton.textContent = 'Share Screen';
+            screenShareButton.querySelector('i').className = 'fas fa-desktop';
             showSuccess('Screen sharing stopped');
         }
     } catch (error) {
         console.error('Error toggling screen share:', error);
-        showError('Failed to toggle screen share: ' + error.message);
+        showError('Failed to toggle screen sharing');
     }
 }
 
@@ -665,6 +1141,9 @@ function resetUI() {
     // Clear participants area
     participantsArea.innerHTML = '';
     
+    // Remove any lingering mic status elements
+    document.querySelectorAll('.mic-status').forEach(el => el.remove());
+    
     // Reset button states
     muteButton.disabled = true;
     videoButton.disabled = true;
@@ -693,60 +1172,110 @@ window.addEventListener('beforeunload', (e) => {
     }
 });
 
-// Add event listeners for room state changes
-function setupRoomEventListeners() {
-    if (!room) return;
-
-    room.on(LivekitClient.RoomEvent.Connected, () => {
-        console.log('Connected to room');
-        showSuccess('Connected to room');
-    });
-
-    room.on(LivekitClient.RoomEvent.Disconnected, () => {
-        console.log('Disconnected from room');
-        showError('Disconnected from room');
-        resetUI();
-    });
-
-    room.on(LivekitClient.RoomEvent.ParticipantConnected, (participant) => {
-        console.log('Participant connected:', participant.identity);
-        showSuccess(`${participant.identity} joined the room`);
-    });
-
-    room.on(LivekitClient.RoomEvent.ParticipantDisconnected, (participant) => {
-        console.log('Participant disconnected:', participant.identity);
-        showWarning(`${participant.identity} left the room`);
-    });
-
-    room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
-        if (track.kind === 'video' || track.kind === 'audio') {
-            const element = track.attach();
-            addParticipantTrack(participant, element);
-        }
-    });
-
-    room.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track) => {
-        track.detach().forEach(element => element.remove());
-    });
-}
-
 function handleLocalTrackPublished(publication) {
-    console.log('Local track published:', publication.kind);
-    const videoElement = document.getElementById(`video-${room.localParticipant.identity}`);
-    if (videoElement && publication.track) {
-        console.log('Attaching local track to video element');
-        publication.track.attach(videoElement);
+    console.log('Local track published:', publication.kind, 'source:', publication.source, 'trackSid:', publication.trackSid);
+    
+    if (publication.kind === 'video' && (!publication.source || !publication.source.includes('screen'))) {
+        const videoElement = document.getElementById(`video-${room.localParticipant.identity}`);
+        const placeholderElement = document.querySelector(`#participant-${room.localParticipant.identity} .video-placeholder`);
+        const participantDiv = document.getElementById(`participant-${room.localParticipant.identity}`);
+        
+        console.log('Local video track published. Video element exists:', !!videoElement, 
+                   'Placeholder exists:', !!placeholderElement,
+                   'Track exists:', !!publication.track);
+        
+        if (videoElement && publication.track) {
+            try {
+                // Remove video-off class
+                if (participantDiv) {
+                    participantDiv.classList.remove('video-off');
+                }
+                
+                // Clear existing video content
+                videoElement.srcObject = null;
+                videoElement.pause();
+                
+                // Attach the track to the video element directly
+                publication.track.attach(videoElement);
+                console.log('Attaching local video track to video element - track ID:', publication.trackSid);
+                
+                // Ensure video is playing
+                videoElement.play().catch(err => {
+                    console.error('Error playing video after attachment:', err);
+                });
+                
+                // Hide placeholder
+                if (placeholderElement) {
+                    placeholderElement.style.display = 'none';
+                }
+                
+                // Check if video is actually playing after a short delay
+                setTimeout(() => {
+                    console.log('Video element state check:',
+                               'readyState:', videoElement.readyState,
+                               'paused:', videoElement.paused,
+                               'ended:', videoElement.ended,
+                               'videoWidth:', videoElement.videoWidth,
+                               'videoHeight:', videoElement.videoHeight);
+                    
+                    if (videoElement.readyState === 0 || videoElement.paused) {
+                        console.warn('Video element not playing despite track attachment, trying again');
+                        // Try playing the video element explicitly
+                        videoElement.play().catch(err => {
+                            console.error('Error playing video on retry:', err);
+                        });
+                    } else {
+                        console.log('Video is playing correctly');
+                    }
+                }, 1000);
+            } catch (error) {
+                console.error('Error attaching local video track:', error);
+                // Show placeholder if video attachment fails
+                if (placeholderElement) {
+                    placeholderElement.style.display = 'flex';
+                }
+                // Add video-off class
+                if (participantDiv) {
+                    participantDiv.classList.add('video-off');
+                }
+            }
+        } else {
+            console.error('Failed to find video element for local participant or track is null');
+        }
+    } else if (publication.kind === 'video' && publication.source && publication.source.includes('screen')) {
+        console.log('Screen share track published');
+    } else if (publication.kind === 'audio') {
+        console.log('Local audio track published');
     }
 }
 
 function handleTrackPublished(publication, participant) {
-    console.log('Track published:', publication.kind, 'from', participant.identity);
-    if (participant !== room.localParticipant) {
-        const videoElement = document.getElementById(`video-${participant.identity}`);
-        if (videoElement && publication.track) {
-            console.log('Attaching remote track to video element');
-            publication.track.attach(videoElement);
-        }
+    console.log(`Track published from ${participant.identity}:`, publication.kind);
+
+    // Update mute status for audio tracks
+    if (publication.kind === 'audio') {
+        updateMicStatusIndicator(participant, publication.isMuted);
+        
+        // Listen for publication mute changes
+        publication.on('muted', () => {
+            console.log(`Publication ${publication.kind} from ${participant.identity} was muted`);
+            updateMicStatusIndicator(participant, true);
+        });
+        
+        publication.on('unmuted', () => {
+            console.log(`Publication ${publication.kind} from ${participant.identity} was unmuted`);
+            updateMicStatusIndicator(participant, false);
+        });
+    }
+
+    // For video tracks, handle them when subscribed
+    if (publication.track) {
+        handleTrackSubscribed(publication.track, publication, participant);
+    } else {
+        // Wait for the track to be subscribed
+        publication.on('subscribed', (track) => {
+            handleTrackSubscribed(track, publication, participant);
+        });
     }
 }
 
@@ -763,11 +1292,24 @@ function handleTrackUnsubscribed(track, participant) {
 
 function handleParticipantDisconnected(participant) {
     console.log('Participant disconnected:', participant.identity);
+    
+    // Remove participant's element
     const participantDiv = document.getElementById(`participant-${participant.identity}`);
     if (participantDiv) {
         participantDiv.remove();
     }
-    showWarning(`${participant.identity} left the room`);
+    
+    // Remove any mic status elements that might be lingering
+    const micStatusElement = document.getElementById(`mic-status-${participant.identity}`);
+    if (micStatusElement) {
+        micStatusElement.remove();
+    }
+    
+    // Show notification
+    showWarning(`${participant.identity} left the meeting`);
+    
+    // Update grid layout
+    updateParticipantGrid();
 }
 
 // Add grant for the room
@@ -780,4 +1322,44 @@ at.addGrant({
     roomList: true,
     roomCreate: true,
     roomAdmin: false
-}); 
+});
+
+// Thêm hàm addParticipantTrack mới
+function addParticipantTrack(participant, element) {
+    console.log(`Adding track element for ${participant.identity}, element kind: ${element.tagName}`);
+    
+    // Xử lý theo loại phần tử
+    if (element.tagName === 'VIDEO') {
+        // Tìm phần tử video của người tham gia
+        const videoElement = document.getElementById(`video-${participant.identity}`);
+        const placeholderElement = document.querySelector(`#participant-${participant.identity} .video-placeholder`);
+        
+        if (videoElement) {
+            // Đảm bảo srcObject được xóa trước khi đính kèm
+            videoElement.srcObject = null;
+            
+            // Đính kèm video mới
+            try {
+                videoElement.srcObject = element.srcObject;
+                videoElement.play().catch(err => console.error('Error playing video:', err));
+                
+                // Ẩn placeholder nếu video đang phát
+                if (placeholderElement) {
+                    placeholderElement.style.display = 'none';
+                }
+                
+                console.log(`Successfully attached video for ${participant.identity}`);
+            } catch (error) {
+                console.error(`Error attaching video for ${participant.identity}:`, error);
+            }
+        } else {
+            console.warn(`No video element found for ${participant.identity}`);
+        }
+    } else if (element.tagName === 'AUDIO') {
+        // Xử lý âm thanh - chỉ cần thêm vào DOM
+        element.id = `audio-${participant.identity}`;
+        element.style.display = 'none';
+        document.body.appendChild(element);
+        console.log(`Added audio element for ${participant.identity}`);
+    }
+} 

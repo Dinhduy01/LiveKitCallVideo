@@ -3,27 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LiveKit Video Chat</title>
+    <title>Video Meeting</title>
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
 </head>
 <body>
     <div class="container">
         <div class="room-input">
+            <h1>Join Video Meeting</h1>
             <input type="text" id="roomId" placeholder="Enter room name">
             <input type="text" id="participantName" placeholder="Enter your name">
-            <button id="joinButton">Join Room</button>
+            <button id="joinButton">Join Meeting</button>
         </div>
 
         <div class="video-container" style="display: none;">
+            <div class="meeting-info">
+                <div class="meeting-title"></div>
+                <div class="meeting-time"></div>
+            </div>
             <div id="participants-area"></div>
         </div>
         
         <div class="controls" style="display: none;">
-            <button id="muteButton">Mute</button>
-            <button id="videoButton">Stop Video</button>
-            <button id="screenShareButton">Share Screen</button>
-            <button id="leaveButton">Leave Room</button>
+            <button id="muteButton"><i class="fas fa-microphone"></i></button>
+            <button id="videoButton"><i class="fas fa-video"></i></button>
+            <button id="screenShareButton"><i class="fas fa-desktop"></i></button>
+            <button id="leaveButton">Leave Meeting</button>
         </div>
     </div>
     <script src="app.js"></script>
