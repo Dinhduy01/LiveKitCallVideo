@@ -23,6 +23,8 @@ let isMuted = false;
 let isVideoOff = false;
 let isScreenSharing = false;
 let currentRoom = null;
+let isRoomCreator = false; // Track if current user is the room creator
+let endRoomButton = null; // Reference to end room button
 
 // Configuration
 const configuration = {
@@ -47,7 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // Functions
-async function getToken(roomName, participantName) {
+async function getToken(roomName, participantName, isRoomCreator) {
     try {
         console.log('Requesting token for:', participantName, 'in room:', roomName);
         const response = await fetch('/get-token', {
@@ -55,7 +57,7 @@ async function getToken(roomName, participantName) {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ roomName, participantName }),
+            body: JSON.stringify({ roomName, participantName, isRoomCreator }),
         });
 
         if (!response.ok) {
@@ -556,6 +558,18 @@ function setupRoomEventListeners(room) {
         }
     });
     
+    // Handle room disconnection
+    room.on('disconnected', (reason) => {
+        console.log('Room disconnected:', reason);
+        
+        // If the room was forcibly ended and the current user is not the creator
+        if (!isRoomCreator) {
+            showWarning('The room has been ended by the host');
+        }
+        
+        resetUI();
+    });
+    
     // Local participant events
     if (room.localParticipant) {
         const localParticipant = room.localParticipant;
@@ -636,8 +650,26 @@ async function joinRoom() {
     }
 
     try {
+        // Check if the room exists by trying to get metadata
+        try {
+            const checkRoomResponse = await fetch('/check-room', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ roomName }),
+            });
+            
+            const roomData = await checkRoomResponse.json();
+            isRoomCreator = !roomData.exists;
+            console.log('Room exists:', roomData.exists, 'isRoomCreator:', isRoomCreator);
+        } catch (error) {
+            console.warn('Error checking room existence, assuming new room:', error);
+            isRoomCreator = true;
+        }
+
         // Get token from server
-        const { token, url } = await getToken(roomName, participantName);
+        const { token, url } = await getToken(roomName, participantName, isRoomCreator);
         console.log('Connecting to room with token:', token);
         
         // Create room
@@ -666,6 +698,31 @@ async function joinRoom() {
         await room.connect(url, token);
         console.log('Connected to room:', room.name);
         
+        // If room creator, store metadata on the room
+        if (isRoomCreator) {
+            try {
+                // Create "End Room" button for the creator
+                createEndRoomButton();
+                
+                // Save creator info in room metadata
+                await fetch('/set-room-metadata', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ 
+                        roomName, 
+                        metadata: JSON.stringify({
+                            creatorId: room.localParticipant.identity,
+                            createdAt: Date.now()
+                        })
+                    }),
+                });
+            } catch (error) {
+                console.warn('Error setting room metadata:', error);
+            }
+        }
+
         // Cập nhật event listeners cho tất cả người tham gia hiện tại
         if (room.participants) {
             room.participants.forEach((participant) => {
@@ -1150,10 +1207,17 @@ function resetUI() {
     screenShareButton.disabled = true;
     leaveButton.disabled = true;
     
+    // Remove end room button if it exists
+    if (endRoomButton) {
+        endRoomButton.remove();
+        endRoomButton = null;
+    }
+    
     // Reset variables
     isMuted = false;
     isVideoOff = false;
     isScreenSharing = false;
+    isRoomCreator = false;
 }
 
 // Add cleanup function
@@ -1361,5 +1425,102 @@ function addParticipantTrack(participant, element) {
         element.style.display = 'none';
         document.body.appendChild(element);
         console.log(`Added audio element for ${participant.identity}`);
+    }
+}
+
+// Add the createEndRoomButton function after the resetUI function
+function createEndRoomButton() {
+    // If button already exists, don't create again
+    if (endRoomButton) return;
+    
+    // Create end room button
+    endRoomButton = document.createElement('button');
+    endRoomButton.id = 'endRoomButton';
+    endRoomButton.className = 'control-button end-room';
+    endRoomButton.title = 'End Meeting for All';
+    
+    // Create icon for the button
+    const endRoomIcon = document.createElement('i');
+    endRoomIcon.className = 'fas fa-power-off';
+    
+    // Create text for the button
+    const endRoomText = document.createElement('span');
+    endRoomText.textContent = 'End Room';
+    
+    // Append elements to button
+    endRoomButton.appendChild(endRoomIcon);
+    endRoomButton.appendChild(endRoomText);
+    
+    // Add event listener
+    endRoomButton.addEventListener('click', endRoom);
+    
+    // Add to controls
+    const controls = document.querySelector('.controls');
+    controls.appendChild(endRoomButton);
+    
+    // Reorganize controls if they're not already organized
+    if (!document.querySelector('.controls-center')) {
+        // Get all the other control buttons except the end room button
+        const otherButtons = Array.from(controls.querySelectorAll('button:not(#endRoomButton)'));
+        
+        // Create center container
+        const centerContainer = document.createElement('div');
+        centerContainer.className = 'controls-center';
+        
+        // Move other buttons to the center container
+        otherButtons.forEach(button => {
+            centerContainer.appendChild(button);
+        });
+        
+        // Add center container to controls
+        controls.insertBefore(centerContainer, endRoomButton);
+    }
+}
+
+// Add the endRoom function
+async function endRoom() {
+    if (!isRoomCreator || !room) {
+        console.warn('Only the room creator can end the room');
+        showWarning('Only the room creator can end the room');
+        return;
+    }
+    
+    if (confirm('Are you sure you want to end the room for all participants?')) {
+        try {
+            // Send request to server to end the room
+            const response = await fetch('/end-room', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    roomName: room.name,
+                    participantId: room.localParticipant.identity
+                }),
+            });
+            
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || 'Failed to end room');
+            }
+            
+            // Disconnect from room
+            await room.disconnect();
+            room = null;
+            
+            // Reset UI
+            resetUI();
+            
+            // Clean up end room button
+            if (endRoomButton) {
+                endRoomButton.remove();
+                endRoomButton = null;
+            }
+            
+            showSuccess('Room ended successfully');
+        } catch (error) {
+            console.error('Error ending room:', error);
+            showError('Failed to end room: ' + error.message);
+        }
     }
 } 

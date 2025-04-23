@@ -215,6 +215,13 @@ body {
     padding: 10px;
     background-color: #333;
     border-radius: 8px;
+    position: relative;
+}
+
+.controls-center {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
 }
 
 .controls button {
@@ -328,5 +335,36 @@ button:disabled {
 }
 
 .meeting-time {
+    font-size: 14px;
+}
+
+/* Add this near the controls section in your CSS */
+.end-room {
+    background-color: rgba(220, 53, 69, 0.85);
+    color: white;
+    font-weight: 500;
+    border-radius: 24px;
+    padding: 8px 16px;
+    width: auto;
+    height: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s ease;
+    position: absolute;
+    right: 10px;
+    border: none;
+    font-size: 14px;
+}
+
+.end-room:hover {
+    background-color: rgba(220, 53, 69, 1);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.2);
+}
+
+.end-room i {
+    margin-right: 6px;
     font-size: 14px;
 } 
